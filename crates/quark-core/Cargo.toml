@@ -1,0 +1,33 @@
+[package]
+name = "quark-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+httpdate.workspace = true
+mime_guess.workspace = true
+md-5.workspace = true
+quark-protocol.workspace = true
+quark-store.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+axum = "0.8"
+quark-testkit = { path = "../quark-testkit" }
+tempfile = "3"

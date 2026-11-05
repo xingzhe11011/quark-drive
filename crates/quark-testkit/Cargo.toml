@@ -1,0 +1,11 @@
+[package]
+name = "quark-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = "0.8"
+bytes.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

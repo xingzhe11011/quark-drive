@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f4f5f9;
+  --panel: #ffffff;
+  --panel-2: #fafbfe;
+  --ink: #151826;
+  --muted: #70748a;
+  --line: #e7e9f2;
+  --accent: #6d5efc;
+  --accent-2: #8f7dff;
+  --accent-soft: #efedff;
+  --success: #16a34a;
+  --danger: #e5484d;
+  --sidebar: #0d1020;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+.dark {
+  --bg: #0b0d17;
+  --panel: #121527;
+  --panel-2: #171b30;
+  --ink: #eef0ff;
+  --muted: #9a9fb8;
+  --line: #252a44;
+  --accent: #8b7cff;
+  --accent-2: #a495ff;
+  --accent-soft: #211d45;
+  --success: #45d483;
+  --danger: #ff6b70;
+  --sidebar: #080a14;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 28%, transparent);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.glass {
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.brand-gradient {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.16), transparent 28%),
+    radial-gradient(circle at 82% 26%, rgba(76, 219, 255, 0.18), transparent 32%),
+    linear-gradient(145deg, #121530 0%, #2a1f68 48%, #6d5efc 100%);
+}
+
+.mesh-bg {
+  background-image:
+    radial-gradient(at 20% 10%, rgba(109, 94, 252, 0.16) 0, transparent 42%),
+    radial-gradient(at 85% 18%, rgba(55, 189, 248, 0.12) 0, transparent 38%),
+    radial-gradient(at 60% 90%, rgba(139, 124, 255, 0.1) 0, transparent 42%);
+}
+
+.qr-grid {
+  background-image:
+    linear-gradient(90deg, var(--ink) 10%, transparent 10%),
+    linear-gradient(var(--ink) 10%, transparent 10%);
+  background-size: 14px 14px;
+  opacity: 0.9;
+}
+
+.file-row:hover .row-actions {
+  opacity: 1;
+}
+
+.row-actions {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.float-slow {
+  animation: float 7s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--panel-2) 25%,
+    color-mix(in srgb, var(--line) 65%, transparent) 37%,
+    var(--panel-2) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
