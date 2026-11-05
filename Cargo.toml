@@ -14,6 +14,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[profile.release]
+strip = true
+
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"

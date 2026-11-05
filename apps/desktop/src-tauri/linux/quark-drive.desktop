@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=Network;FileTransfer;
+Comment={{comment}}
+Exec={{exec}}
+StartupWMClass=quark-drive
+Icon={{icon}}
+Name=夸克网盘
+Terminal=false
+Type=Application
