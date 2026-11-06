@@ -317,10 +317,8 @@ function TransferRow({
             <Button
               size="icon"
               variant="ghost"
-              onClick={() => {
-                const path = transfer.localPath.replace(/\/[^/]+$/, "");
-                void backend.openPath(path);
-              }}
+              disabled={busy}
+              onClick={() => onAction(() => backend.openPath(transfer.localPath))}
             >
               <FolderOpen className="h-3.5 w-3.5" />
             </Button>

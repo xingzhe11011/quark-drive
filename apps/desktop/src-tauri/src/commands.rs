@@ -2,6 +2,7 @@ use quark_core::{
     AccountView, Bootstrap, DownloadItem, FileView, ListResult, QrLoginPollView, QrLoginStart,
     RecycleListResult, Settings, TransferView,
 };
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
 use crate::AppState;
@@ -310,10 +311,82 @@ pub async fn pick_folder(app: AppHandle) -> CommandResult<Option<String>> {
 
 #[tauri::command]
 pub async fn open_path(path: String) -> CommandResult<()> {
-    std::process::Command::new("xdg-open")
-        .arg("--")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(err)
+    let requested = PathBuf::from(path);
+    let folder = folder_for_path(&requested);
+    let folder = std::fs::canonicalize(&folder)
+        .map_err(|error| format!("无法访问文件夹 {}：{error}", folder.display()))?;
+    if !folder.is_dir() {
+        return Err(format!("不是文件夹：{}", folder.display()));
+    }
+    open_folder(&folder)
+}
+
+fn folder_for_path(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(path)
+            .to_path_buf()
+    }
+}
+
+fn folder_open_command(program: &str, folder: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    if program == "gio" {
+        command.arg("open");
+    }
+    command.arg(folder);
+    command
+}
+
+fn open_folder(folder: &Path) -> CommandResult<()> {
+    let mut errors = Vec::new();
+    for program in ["xdg-open", "gio"] {
+        match folder_open_command(program, folder).status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => errors.push(format!("{program} 退出码 {}", status.code().unwrap_or(-1))),
+            Err(error) => errors.push(format!("{program}: {error}")),
+        }
+    }
+    Err(format!("无法打开文件夹：{}", errors.join("；")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn file_uses_parent_folder() {
+        let folder = folder_for_path(Path::new("/tmp/quark-drive/file.zip"));
+        assert_eq!(folder, PathBuf::from("/tmp/quark-drive"));
+    }
+
+    #[test]
+    fn directory_uses_itself() {
+        let folder = folder_for_path(&std::env::temp_dir());
+        assert_eq!(folder, std::env::temp_dir());
+    }
+
+    #[test]
+    fn xdg_open_does_not_receive_option_separator() {
+        let command = folder_open_command("xdg-open", Path::new("/tmp/quark-drive"));
+        assert_eq!(command.get_program(), "xdg-open");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new("/tmp/quark-drive")]
+        );
+    }
+
+    #[test]
+    fn gio_receives_open_subcommand() {
+        let command = folder_open_command("gio", Path::new("/tmp/quark-drive"));
+        assert_eq!(command.get_program(), "gio");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new("open"), OsStr::new("/tmp/quark-drive")]
+        );
+    }
 }

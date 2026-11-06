@@ -391,7 +391,7 @@ export default function LoginPage({
             <ShieldCheck className="h-3 w-3" />
             登录信息仅存储在本机
             <span className="mx-1">·</span>
-            v0.1.0
+            v0.1.1
           </div>
         </div>
       </section>

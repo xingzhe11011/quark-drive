@@ -260,7 +260,7 @@ export default function SettingsPage() {
         <section className="rounded-2xl border border-[var(--line)] bg-[var(--panel)] p-5">
           <SectionTitle icon={Info} title="关于" />
           <div className="mt-4 grid gap-3 text-[11px] sm:grid-cols-2">
-            <InfoRow label="版本" value="0.1.0" />
+            <InfoRow label="版本" value="0.1.1" />
             <InfoRow label="协议" value="Quark PC API (Cookie)" />
             <InfoRow label="数据目录" value={dataDir || "—"} mono />
             <InfoRow label="凭据存储" value="本地文件 · 0600 权限" />
