@@ -21,7 +21,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 dirs.workspace = true
 quark-core.workspace = true
-rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
