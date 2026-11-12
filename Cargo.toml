@@ -24,7 +24,7 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 cookie = "0.18"
-dirs = "6"
+dirs = "7"
 futures-util = "0.3"
 hex = "0.4"
 httpdate = "1"
