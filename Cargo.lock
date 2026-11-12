@@ -3141,7 +3141,7 @@ dependencies = [
 
 [[package]]
 name = "quark-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3161,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "quark-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "quark-drive"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "dirs 6.0.0",
  "quark-core",
@@ -3208,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "quark-protocol"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3235,7 +3235,7 @@ dependencies = [
 
 [[package]]
 name = "quark-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "quark-testkit"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "bytes",
