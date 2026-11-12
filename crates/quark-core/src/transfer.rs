@@ -516,7 +516,7 @@ async fn save_upload_state(
     Ok(())
 }
 
-async fn hash_file(path: &Path, cancel: &CancellationToken) -> Result<(String, String)> {
+pub(crate) async fn hash_file(path: &Path, cancel: &CancellationToken) -> Result<(String, String)> {
     let mut file = File::open(path).await?;
     let mut md5 = md5::Md5::new();
     let mut sha1 = sha1::Sha1::new();
@@ -533,7 +533,7 @@ async fn hash_file(path: &Path, cancel: &CancellationToken) -> Result<(String, S
     Ok((hex(&md5.finalize()), hex(&sha1.finalize())))
 }
 
-async fn read_part(path: &Path, offset: u64, size: u64) -> Result<Bytes> {
+pub(crate) async fn read_part(path: &Path, offset: u64, size: u64) -> Result<Bytes> {
     let mut file = File::open(path).await?;
     file.seek(std::io::SeekFrom::Start(offset)).await?;
     let mut buffer = vec![0u8; size as usize];

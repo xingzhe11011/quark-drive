@@ -39,10 +39,10 @@
       "icons/icon.ico"
     ],
     "shortDescription": "非官方夸克网盘 Linux 桌面客户端",
-    "longDescription": "第三方、非官方客户端。支持扫码登录、文件浏览、回收站、上传下载、断点续传和任务管理。",
+    "longDescription": "第三方、非官方客户端。支持扫码登录、文件浏览、回收站、上传下载、断点续传、任务管理，以及隐私空间解锁、浏览、上传、下载和移动。",
     "linux": {
       "deb": {
-        "depends": ["xdg-utils"],
+        "depends": ["xdg-utils", "xdg-desktop-portal", "zenity"],
         "desktopTemplate": "linux/quark-drive.desktop"
       }
     }

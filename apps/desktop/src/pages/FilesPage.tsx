@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  AlertTriangle,
   Archive,
   ChevronRight,
   CloudUpload,
@@ -20,6 +21,7 @@ import {
   List,
   Loader2,
   MoreHorizontal,
+  MoveRight,
   Pencil,
   RefreshCw,
   Search,
@@ -29,7 +31,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { backend } from "../lib/backend";
-import type { FileItem } from "../lib/types";
+import { classifyBackendError, fileListErrorState } from "../lib/errors";
+import { insertFile, removeFiles, renameFile } from "../lib/file-mutations";
+import type { FileItem, ListResult } from "../lib/types";
 import { cn, formatBytes, formatDate } from "../lib/utils";
 import { useAppStore } from "../store";
 import { Badge } from "../components/ui/badge";
@@ -39,6 +43,7 @@ import { Dialog } from "../components/ui/dialog";
 import { Dropdown, DropdownItem, DropdownSeparator } from "../components/ui/dropdown";
 import { Input } from "../components/ui/input";
 import { Tooltip } from "../components/ui/tooltip";
+import { MoveDestinationDialog } from "../components/MoveDestinationDialog";
 
 function extensionOf(name: string) {
   const index = name.lastIndexOf(".");
@@ -103,11 +108,13 @@ export default function FilesPage() {
   const [renameTarget, setRenameTarget] = useState<FileItem | null>(null);
   const [renameName, setRenameName] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const query = useQuery({
     queryKey: ["files", account.id, current.fid],
     queryFn: () => backend.listDir(account.id, current.fid),
+    retry: (failureCount, error) => classifyBackendError(error) === "other" && failureCount < 1,
   });
 
   const files = useMemo(() => {
@@ -134,6 +141,23 @@ export default function FilesPage() {
     await query.refetch();
   }
 
+  function updateCurrentFolder(
+    updater: (previous: ListResult | undefined) => ListResult | undefined,
+  ) {
+    queryClient.setQueryData<ListResult>(
+      ["files", account.id, current.fid],
+      updater,
+    );
+  }
+
+  function reconcileAfterMutation(reapply?: () => void) {
+    void (async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      await refresh();
+      reapply?.();
+    })();
+  }
+
   async function upload(kind: "files" | "folder") {
     try {
       const paths =
@@ -143,6 +167,7 @@ export default function FilesPage() {
       if (!paths.length) return;
       setBusy(true);
       const ids = await backend.enqueueUpload(account.id, paths, current.fid);
+      void queryClient.invalidateQueries({ queryKey: ["files", account.id] });
       toast.success(`已加入上传队列（${ids.length} 个文件）`);
       setPage("transfers");
     } catch (error) {
@@ -175,11 +200,32 @@ export default function FilesPage() {
     if (!folderName.trim()) return;
     try {
       setBusy(true);
-      await backend.mkdir(account.id, current.fid, folderName.trim());
+      const name = folderName.trim();
+      const fid = await backend.mkdir(account.id, current.fid, name);
+      const created: FileItem | undefined = fid
+        ? {
+            fid,
+            parentFid: current.fid,
+            name,
+            isDir: true,
+            size: 0,
+            category: 0,
+            formatType: "",
+            updatedAt: Date.now(),
+            thumbnail: "",
+          }
+        : undefined;
+      if (created) {
+        updateCurrentFolder((previous) => insertFile(previous, created));
+      }
       setNewFolderOpen(false);
       setFolderName("新建文件夹");
-      await refresh();
       toast.success("文件夹已创建");
+      reconcileAfterMutation(
+        created
+          ? () => updateCurrentFolder((previous) => insertFile(previous, created))
+          : undefined,
+      );
     } catch (error) {
       toast.error(`创建失败：${error}`);
     } finally {
@@ -188,13 +234,18 @@ export default function FilesPage() {
   }
 
   async function confirmRename() {
-    if (!renameTarget || !renameName.trim()) return;
+    const target = renameTarget;
+    const name = renameName.trim();
+    if (!target || !name) return;
     try {
       setBusy(true);
-      await backend.rename(account.id, renameTarget.fid, renameName.trim());
+      await backend.rename(account.id, target.fid, name);
+      updateCurrentFolder((previous) => renameFile(previous, target.fid, name));
       setRenameTarget(null);
-      await refresh();
       toast.success("已重命名");
+      reconcileAfterMutation(() =>
+        updateCurrentFolder((previous) => renameFile(previous, target.fid, name)),
+      );
     } catch (error) {
       toast.error(`重命名失败：${error}`);
     } finally {
@@ -204,16 +255,18 @@ export default function FilesPage() {
 
   async function confirmDelete() {
     if (!selectedItems.length) return;
+    const fids = selectedItems.map((item) => item.fid);
     try {
       setBusy(true);
-      await backend.deleteFiles(
-        account.id,
-        selectedItems.map((item) => item.fid),
-      );
+      await backend.deleteFiles(account.id, fids);
+      updateCurrentFolder((previous) => removeFiles(previous, fids));
+      void queryClient.invalidateQueries({ queryKey: ["recycle", account.id] });
       clearSelection();
       setDeleteOpen(false);
-      await refresh();
       toast.success("已移入回收站");
+      reconcileAfterMutation(() =>
+        updateCurrentFolder((previous) => removeFiles(previous, fids)),
+      );
     } catch (error) {
       toast.error(`删除失败：${error}`);
     } finally {
@@ -305,6 +358,10 @@ export default function FilesPage() {
                 <Download className="h-3.5 w-3.5" />
                 下载
               </Button>
+              <Button size="sm" variant="ghost" onClick={() => setMoveOpen(true)}>
+                <MoveRight className="h-3.5 w-3.5" />
+                移动
+              </Button>
               <Button size="sm" variant="ghost" onClick={() => setDeleteOpen(true)}>
                 <Trash2 className="h-3.5 w-3.5" />
                 删除
@@ -366,7 +423,9 @@ export default function FilesPage() {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)]">
-        {viewMode === "list" ? (
+        {query.isError ? (
+          <FileListError error={query.error} retrying={query.isFetching} onRetry={refresh} />
+        ) : viewMode === "list" ? (
           <>
             <div className="grid shrink-0 grid-cols-[44px_minmax(0,1fr)_120px_150px_48px] items-center border-b border-[var(--line)] px-3 py-2.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted)]">
               <div className="flex justify-center">
@@ -479,6 +538,15 @@ export default function FilesPage() {
                             >
                               <Pencil className="h-3.5 w-3.5" />
                               重命名
+                            </DropdownItem>
+                            <DropdownItem
+                              onSelect={() => {
+                                setSelection([item.fid]);
+                                setMoveOpen(true);
+                              }}
+                            >
+                              <MoveRight className="h-3.5 w-3.5" />
+                              移动到…
                             </DropdownItem>
                             <DropdownSeparator />
                             <DropdownItem
@@ -618,6 +686,53 @@ export default function FilesPage() {
           </>
         }
       />
+
+      <MoveDestinationDialog
+        open={moveOpen}
+        onOpenChange={setMoveOpen}
+        accountId={account.id}
+        fids={selectedItems.map((item) => item.fid)}
+        currentParentFid={current.fid}
+        onMoved={async (movedFids, destinationFid) => {
+          updateCurrentFolder((previous) => removeFiles(previous, movedFids));
+          clearSelection();
+          void queryClient.invalidateQueries({
+            queryKey: ["files", account.id, destinationFid],
+          });
+          await new Promise((resolve) => window.setTimeout(resolve, 700));
+          await refresh();
+          updateCurrentFolder((previous) => removeFiles(previous, movedFids));
+        }}
+      />
+    </div>
+  );
+}
+
+function FileListError({
+  error,
+  retrying,
+  onRetry,
+}: {
+  error: unknown;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const state = fileListErrorState(error);
+  return (
+    <div role="alert" className="flex h-full min-h-[360px] flex-col items-center justify-center px-6 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-400/12 text-amber-500">
+        <AlertTriangle className="h-7 w-7" />
+      </div>
+      <div className="mt-4 text-sm font-medium text-[var(--ink)]">{state.title}</div>
+      <div className="mt-1.5 max-w-[340px] text-xs leading-5 text-[var(--muted)]">
+        {state.description}
+      </div>
+      {state.canRetry ? (
+        <Button className="mt-5" size="sm" variant="secondary" onClick={onRetry} disabled={retrying}>
+          <RefreshCw className={cn("h-3.5 w-3.5", retrying && "animate-spin")} />
+          {retrying ? "正在重试…" : "重试"}
+        </Button>
+      ) : null}
     </div>
   );
 }

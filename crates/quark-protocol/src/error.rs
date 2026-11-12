@@ -64,9 +64,12 @@ impl Error {
                 message,
                 ..
             } => {
+                if *status == 403 && *code == 24005 {
+                    return false;
+                }
                 *status == 401
                     || *status == 403 && message.to_ascii_lowercase().contains("login")
-                    || matches!(*code, 11001 | 14001 | 31001 | 31002 | 31003)
+                    || matches!(*code, 11001 | 31001 | 31002 | 31003)
             }
             _ => false,
         }
@@ -102,6 +105,30 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_errors_do_not_expire_login_sessions() {
+        assert!(!Error::api(400, 14001, "Bad Parameter: [param missing!]").is_auth());
+    }
+
+    #[test]
+    fn secret_space_restrictions_do_not_expire_login_sessions() {
+        assert!(!Error::api(403, 24005, "secret space limit: get file vo").is_auth());
+        assert!(!Error::api(403, 24005, "login to secret space").is_auth());
+    }
+
+    #[test]
+    fn known_login_errors_require_authentication() {
+        assert!(Error::AuthRequired.is_auth());
+        assert!(Error::api(401, 0, "unauthorized").is_auth());
+        assert!(Error::api(401, 14001, "unauthorized").is_auth());
+        assert!(Error::api(403, 0, "LOGIN required").is_auth());
+        assert!(Error::api(403, 14001, "login expired").is_auth());
+        for code in [11001, 31001, 31002, 31003] {
+            assert!(Error::api(200, code, "session invalid").is_auth());
+        }
+        assert!(!Error::api(403, 0, "forbidden").is_auth());
+    }
 
     #[tokio::test]
     async fn network_errors_do_not_expose_request_urls() {

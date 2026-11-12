@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { backend } from "../lib/backend";
-import type { RecycleItem } from "../lib/types";
+import type { RecycleItem, RecycleListResult } from "../lib/types";
 import { cn, formatBytes, formatDate } from "../lib/utils";
 import { useAppStore } from "../store";
 import { Badge } from "../components/ui/badge";
@@ -62,11 +62,42 @@ export default function RecycleBinPage() {
   async function refreshAfterMutation() {
     setSelection([]);
     setPage(1);
+    void queryClient.invalidateQueries({
+      queryKey: ["recycle", account.id],
+      refetchType: "none",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["files", account.id],
+      refetchType: "none",
+    });
     await new Promise((resolve) => setTimeout(resolve, 700));
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["recycle", account.id] }),
       queryClient.invalidateQueries({ queryKey: ["files", account.id] }),
     ]);
+  }
+
+  function removeFromCurrentPage(recordIds: string[] | null) {
+    queryClient.setQueryData<RecycleListResult>(
+      ["recycle", account.id, page],
+      (previous) => {
+        if (!previous) return previous;
+        if (!recordIds) return { ...previous, entries: [], total: 0 };
+        const removed = new Set(recordIds);
+        const entries = previous.entries.filter(
+          (item) => !removed.has(item.recordId),
+        );
+        if (entries.length === previous.entries.length) return previous;
+        return {
+          ...previous,
+          entries,
+          total: Math.max(
+            0,
+            previous.total - (previous.entries.length - entries.length),
+          ),
+        };
+      },
+    );
   }
 
   async function runAction(kind: ConfirmKind) {
@@ -77,12 +108,15 @@ export default function RecycleBinPage() {
     try {
       if (kind === "restore") {
         await backend.restoreRecycle(account.id, recordIds);
+        removeFromCurrentPage(recordIds);
         toast.success(`已恢复 ${recordIds.length} 项`);
       } else if (kind === "delete") {
         await backend.deleteRecycle(account.id, recordIds);
+        removeFromCurrentPage(recordIds);
         toast.success(`已彻底删除 ${recordIds.length} 项`);
       } else {
         const removed = await backend.clearRecycle(account.id);
+        removeFromCurrentPage(null);
         toast.success(removed > 0 ? `已清空 ${removed} 项` : "回收站已经是空的");
       }
       setConfirmKind(null);

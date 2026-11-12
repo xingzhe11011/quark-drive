@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { backend, subscribeEvents } from "./lib/backend";
+import { classifyBackendError } from "./lib/errors";
 import type { Account } from "./lib/types";
 import { useAppStore } from "./store";
 import LoginPage from "./pages/LoginPage";
@@ -22,6 +24,7 @@ function Splash() {
 
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const account = useAppStore((state) => state.account);
   const settings = useAppStore((state) => state.settings);
   const setAccount = useAppStore((state) => state.setAccount);
@@ -52,19 +55,13 @@ export default function App() {
           if (!cancelled) setAccount(account);
         } catch (error) {
           if (cancelled) return;
-          const message = String(error).toLowerCase();
-          const authExpired =
-            message.includes("login") ||
-            message.includes("cookie") ||
-            message.includes("401") ||
-            message.includes("403");
-          if (authExpired) {
+          if (classifyBackendError(error) === "auth") {
             setAccount(null);
             toast("登录已过期，请重新扫码");
           } else {
             // Keep the cached account when the network is temporarily down.
             setAccount(stored);
-            toast.error(`账号校验失败，已使用本地会话：${error}`);
+            toast.error("账号校验暂时失败，已保留本地会话，可稍后重试");
           }
         }
       } catch (error) {
@@ -86,9 +83,23 @@ export default function App() {
         case "accountsChanged":
           setAccount(event.accounts[0] ?? null);
           break;
-        case "transferChanged":
+        case "transferChanged": {
           upsertTransfer(event.transfer);
+          if (
+            event.transfer.kind === "upload" &&
+            event.transfer.status === "done" &&
+            !event.transfer.id.startsWith("privacy:")
+          ) {
+            const refreshFiles = () => {
+              void queryClient.invalidateQueries({
+                queryKey: ["files", event.transfer.accountId],
+              });
+            };
+            refreshFiles();
+            window.setTimeout(refreshFiles, 1_200);
+          }
           break;
+        }
         case "transferProgress":
           patchTransfer(event.id, {
             status: event.status,
@@ -109,7 +120,7 @@ export default function App() {
       dispose = unlisten;
     });
     return () => dispose();
-  }, [patchTransfer, setAccount, upsertTransfer]);
+  }, [patchTransfer, queryClient, setAccount, upsertTransfer]);
 
   useEffect(() => {
     const root = document.documentElement;

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Account, Settings, Transfer } from "./lib/types";
 
-export type Page = "files" | "recycle" | "transfers" | "settings";
+export type Page = "files" | "privacy" | "recycle" | "transfers" | "settings";
 export type ViewMode = "list" | "grid";
 
 export interface Crumb {

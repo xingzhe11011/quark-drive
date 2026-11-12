@@ -1,3 +1,5 @@
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -5,7 +7,8 @@ use bytes::Bytes;
 use httpdate::fmt_http_date;
 use md5::{Digest as Md5Digest, Md5};
 use reqwest::header::{
-    HeaderMap, HeaderValue, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, SET_COOKIE, USER_AGENT,
+    HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, SET_COOKIE,
+    USER_AGENT,
 };
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::Deserialize;
@@ -20,6 +23,7 @@ use crate::models::{
 use crate::session::Session;
 
 const REFERER_VALUE: &str = "https://pan.quark.cn";
+const SECRET_AUTH_HEADER: HeaderName = HeaderName::from_static("x-u-drive-secret-auth");
 const OSS_USER_AGENT: &str = "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit";
 pub const DEFAULT_QUARK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
 
@@ -50,6 +54,29 @@ pub struct QuarkClient {
     http: reqwest::Client,
     session: Arc<Mutex<Session>>,
     config: Arc<ClientConfig>,
+}
+
+#[derive(Clone)]
+pub struct SecretClient {
+    http: reqwest::Client,
+    transfer_http: reqwest::Client,
+    session: Arc<Mutex<Session>>,
+    config: Arc<ClientConfig>,
+    state: Arc<SecretState>,
+}
+
+struct SecretState {
+    token: String,
+    live: AtomicBool,
+}
+
+impl fmt::Debug for SecretClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecretClient")
+            .field("unlocked", &self.state.live.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
 }
 
 impl QuarkClient {
@@ -83,6 +110,85 @@ impl QuarkClient {
         let url = self.api_url("/config")?;
         let req = self.http.get(url);
         self.send_json(req).await.map(|_| ())
+    }
+
+    pub async fn secret_is_registered(&self) -> Result<bool> {
+        let url = self.api_url("/secret/check/register")?;
+        let envelope = self.send_json(self.http.post(url).json(&json!({}))).await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret registration response missing data".to_string()))?;
+        data.get("has_register")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                Error::Other(
+                    "secret registration response missing boolean has_register".to_string(),
+                )
+            })
+    }
+
+    pub async fn secret_unlock(&self, password: &str) -> Result<SecretClient> {
+        if password.is_empty() {
+            return Err(Error::Other(
+                "secret password must not be empty".to_string(),
+            ));
+        }
+        let http = reqwest::Client::builder()
+            .user_agent(&self.config.user_agent)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(4)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let transfer_http = reqwest::Client::builder()
+            .user_agent(&self.config.user_agent)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(300))
+            .pool_max_idle_per_host(8)
+            // CDN/OSS requests never carry the privacy token. Following a
+            // redirect here keeps signed download URLs usable without ever
+            // forwarding the privacy token off the API host.
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()?;
+        let api_base = secret_api_base(&self.config.api_base);
+        let url = build_secret_url(&api_base, "/secret/v2/login")?;
+        let response = http
+            .post(url)
+            .header(COOKIE, self.cookie_header())
+            .header(ORIGIN, REFERER_VALUE)
+            .header(REFERER, REFERER_VALUE)
+            .json(&json!({ "secret_pwd": password }))
+            .send()
+            .await?;
+        let status = response.status();
+        self.update_session(response.headers());
+        let bytes = response.bytes().await?;
+        let envelope = decode_secret_envelope(status, &bytes)?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret login response missing data".to_string()))?;
+        if data.get("succ").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Other(
+                "secret login response did not confirm success".to_string(),
+            ));
+        }
+        let token = data
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| Error::Other("secret login response missing token".to_string()))?;
+        HeaderValue::from_str(token)
+            .map_err(|_| Error::Other("secret login token is invalid".to_string()))?;
+        Ok(SecretClient {
+            http,
+            transfer_http,
+            session: Arc::clone(&self.session),
+            config: Arc::clone(&self.config),
+            state: Arc::new(SecretState {
+                token: token.to_string(),
+                live: AtomicBool::new(true),
+            }),
+        })
     }
 
     pub async fn member_info(&self) -> Result<MemberInfo> {
@@ -712,6 +818,462 @@ impl QuarkClient {
     }
 }
 
+impl SecretClient {
+    pub fn lock(&self) {
+        self.state.live.store(false, Ordering::Release);
+    }
+
+    pub async fn list_dir(
+        &self,
+        pdir_fid: &str,
+        page: u32,
+        size: u32,
+        sort: &str,
+    ) -> Result<ListPage> {
+        self.ensure_live()?;
+        let api_base = secret_api_base(&self.config.api_base);
+        let mut url = build_secret_url(&api_base, "/file/sort")?;
+        url.query_pairs_mut()
+            .append_pair("pdir_fid", pdir_fid)
+            .append_pair("_page", &page.to_string())
+            .append_pair("_size", &size.to_string())
+            .append_pair("_fetch_total", "1")
+            .append_pair("_fetch_sub_dirs", "0")
+            .append_pair("name_space", "0")
+            .append_pair("_sort", sort);
+        let envelope = self.send_json(self.http.get(url), true).await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret list response missing data".to_string()))?;
+        let entries: Vec<FileEntry> =
+            serde_json::from_value(data.get("list").cloned().unwrap_or_else(|| json!([])))?;
+        let total = envelope
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("_total"))
+            .and_then(value_to_u64)
+            .unwrap_or(entries.len() as u64);
+        let response_size = envelope
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("_count"))
+            .and_then(value_to_u64)
+            .unwrap_or(entries.len() as u64) as u32;
+        self.ensure_live()?;
+        Ok(ListPage {
+            entries,
+            total,
+            page,
+            size: response_size,
+        })
+    }
+
+    pub async fn mkdir(&self, parent_fid: &str, name: &str) -> Result<String> {
+        let url = self.api_url("/file")?;
+        let body = json!({
+            "dir_init_lock": false,
+            "dir_path": "",
+            "file_name": name,
+            "pdir_fid": parent_fid,
+        });
+        let envelope = self
+            .send_json(self.http.post(url).json(&body), true)
+            .await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret mkdir response missing data".to_string()))?;
+        Ok(data
+            .get("fid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    pub async fn move_files(&self, fids: &[String], to_pdir_fid: &str) -> Result<()> {
+        let url = self.api_url("/secret/file/move")?;
+        let body = json!({
+            "action_type": 1,
+            "exclude_fids": [],
+            "filelist": fids,
+            "to_pdir_fid": to_pdir_fid,
+        });
+        self.send_json(self.http.post(url).json(&body), true)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn download_urls(&self, fids: &[String]) -> Result<Vec<DownloadUrl>> {
+        let url = self.api_url("/file/download")?;
+        let body = json!({ "fids": fids });
+        let envelope = self
+            .send_json(self.http.post(url).json(&body), true)
+            .await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret download response missing data".to_string()))?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    pub async fn download_range(
+        &self,
+        url: &str,
+        start: u64,
+        end_inclusive: Option<u64>,
+    ) -> Result<Response> {
+        self.ensure_live()?;
+        let cookie = self
+            .session
+            .lock()
+            .expect("session mutex poisoned")
+            .cookie_header();
+        let range = match end_inclusive {
+            Some(end) => format!("bytes={start}-{end}"),
+            None => format!("bytes={start}-"),
+        };
+        let response = self
+            .transfer_http
+            .get(url)
+            .header(COOKIE, cookie)
+            .header(REFERER, REFERER_VALUE)
+            .header(reqwest::header::RANGE, range)
+            .send()
+            .await?;
+        self.session
+            .lock()
+            .expect("session mutex poisoned")
+            .apply_headers(response.headers());
+        self.ensure_live()?;
+        Ok(response)
+    }
+
+    pub async fn upload_pre(
+        &self,
+        file_name: &str,
+        size: i64,
+        parent_fid: &str,
+        mime_type: &str,
+    ) -> Result<UploadPre> {
+        let url = self.api_url("/file/upload/pre")?;
+        let now = now_millis();
+        let body = json!({
+            "file_name": file_name,
+            "size": size,
+            "format_type": mime_type,
+            "ccp_hash_update": true,
+            "l_created_at": now,
+            "l_updated_at": now,
+            "pdir_fid": parent_fid,
+            "dir_name": "",
+            "parallel_upload": false,
+        });
+        let envelope = self
+            .send_json(self.http.post(url).json(&body), true)
+            .await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret upload pre response missing data".to_string()))?;
+        let pre_data: UploadPreData = serde_json::from_value(data)?;
+        let metadata: UploadPreMetadata = envelope
+            .metadata
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        Ok(UploadPre {
+            data: pre_data,
+            metadata,
+        })
+    }
+
+    pub async fn update_hash(&self, md5: &str, sha1: &str, task_id: &str) -> Result<bool> {
+        let url = self.api_url("/file/update/hash")?;
+        let body = json!({ "md5": md5, "sha1": sha1, "task_id": task_id });
+        let envelope = self
+            .send_json(self.http.post(url).json(&body), true)
+            .await?;
+        let data = envelope.data.unwrap_or(Value::Null);
+        Ok(data.get("finish").and_then(Value::as_bool).unwrap_or(false))
+    }
+
+    pub async fn upload_auth(
+        &self,
+        auth_info: &str,
+        auth_meta: &str,
+        task_id: &str,
+    ) -> Result<String> {
+        let url = self.api_url("/file/upload/auth")?;
+        let body = json!({
+            "auth_info": auth_info,
+            "auth_meta": auth_meta,
+            "task_id": task_id,
+        });
+        let envelope = self
+            .send_json(self.http.post(url).json(&body), true)
+            .await?;
+        let data = envelope
+            .data
+            .ok_or_else(|| Error::Other("secret upload auth response missing data".to_string()))?;
+        data.get("auth_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::Other("secret upload auth response missing auth_key".to_string()))
+    }
+
+    pub async fn upload_part(
+        &self,
+        pre: &UploadPre,
+        part_number: u32,
+        mime_type: &str,
+        time_str: &str,
+        body: Bytes,
+    ) -> Result<String> {
+        self.ensure_live()?;
+        let auth_meta = part_auth_meta(
+            mime_type,
+            time_str,
+            &pre.data.bucket,
+            &pre.data.obj_key,
+            part_number,
+            &pre.data.upload_id,
+        );
+        let auth_key = self
+            .upload_auth(&pre.data.auth_info, &auth_meta, &pre.data.task_id)
+            .await?;
+        let url = secret_part_url(&self.config, pre, part_number)?;
+        let response = self
+            .transfer_http
+            .put(url)
+            .header("Authorization", auth_key)
+            .header(CONTENT_TYPE, mime_type)
+            .header("x-oss-date", time_str)
+            .header("x-oss-user-agent", OSS_USER_AGENT)
+            .header(REFERER, "https://pan.quark.cn/")
+            .body(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        self.session
+            .lock()
+            .expect("session mutex poisoned")
+            .apply_headers(&headers);
+        if status != StatusCode::OK {
+            return Err(Error::api(
+                status.as_u16() as i64,
+                0,
+                format!("隐私上传分片 {part_number} 失败"),
+            ));
+        }
+        self.ensure_live()?;
+        headers
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| Error::Other("隐私上传分片响应缺少 ETag".to_string()))
+    }
+
+    pub async fn complete_multipart(&self, pre: &UploadPre, etags: &[String]) -> Result<()> {
+        if etags.is_empty() {
+            return Ok(());
+        }
+        self.ensure_live()?;
+        let time_str = fmt_http_date(SystemTime::now());
+        let xml = build_complete_xml(etags);
+        let content_md5 = {
+            let mut hasher = Md5::new();
+            hasher.update(xml.as_bytes());
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                hasher.finalize(),
+            )
+        };
+        let callback_json = serde_json::to_vec(&pre.data.callback)?;
+        let callback_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, callback_json);
+        let auth_meta = format!(
+            "POST\n{content_md5}\napplication/xml\n{time_str}\nx-oss-callback:{callback_b64}\nx-oss-date:{time_str}\nx-oss-user-agent:{OSS_USER_AGENT}\n/{}/{}?uploadId={}",
+            pre.data.bucket, pre.data.obj_key, pre.data.upload_id
+        );
+        let auth_key = self
+            .upload_auth(&pre.data.auth_info, &auth_meta, &pre.data.task_id)
+            .await?;
+        let url = secret_complete_url(&self.config, pre)?;
+        let response = self
+            .transfer_http
+            .post(url)
+            .header("Authorization", auth_key)
+            .header("Content-MD5", content_md5)
+            .header(CONTENT_TYPE, "application/xml")
+            .header("x-oss-callback", callback_b64)
+            .header("x-oss-date", time_str)
+            .header("x-oss-user-agent", OSS_USER_AGENT)
+            .header(REFERER, "https://pan.quark.cn/")
+            .body(xml)
+            .send()
+            .await?;
+        if response.status() != StatusCode::OK {
+            return Err(Error::api(
+                response.status().as_u16() as i64,
+                0,
+                "隐私上传合并分片失败",
+            ));
+        }
+        self.ensure_live()?;
+        Ok(())
+    }
+
+    pub async fn upload_finish(&self, obj_key: &str, task_id: &str) -> Result<()> {
+        let url = self.api_url("/file/upload/finish")?;
+        let body = json!({ "obj_key": obj_key, "task_id": task_id });
+        self.send_json(self.http.post(url).json(&body), true)
+            .await
+            .map(|_| ())
+    }
+
+    fn api_url(&self, path: &str) -> Result<Url> {
+        build_secret_url(&secret_api_base(&self.config.api_base), path)
+    }
+
+    async fn send_json(&self, request: RequestBuilder, private_auth: bool) -> Result<Envelope> {
+        self.ensure_live()?;
+        let cookie = self
+            .session
+            .lock()
+            .expect("session mutex poisoned")
+            .cookie_header();
+        let mut request = request
+            .header(COOKIE, cookie)
+            .header(ORIGIN, REFERER_VALUE)
+            .header(REFERER, REFERER_VALUE);
+        if private_auth {
+            let token = self.token()?;
+            let auth = HeaderValue::from_str(&token)
+                .map_err(|_| Error::Other("secret session token is invalid".to_string()))?;
+            request = request.header(SECRET_AUTH_HEADER, auth);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        self.session
+            .lock()
+            .expect("session mutex poisoned")
+            .apply_headers(response.headers());
+        let bytes = response.bytes().await?;
+        self.ensure_live()?;
+        decode_secret_envelope(status, &bytes)
+    }
+
+    fn token(&self) -> Result<String> {
+        if !self.state.live.load(Ordering::Acquire) {
+            return Err(secret_locked());
+        }
+        Ok(self.state.token.clone())
+    }
+
+    fn ensure_live(&self) -> Result<()> {
+        if self.state.live.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(secret_locked())
+        }
+    }
+}
+
+fn secret_locked() -> Error {
+    Error::Other("secret session is locked".to_string())
+}
+
+fn secret_api_base(api_base: &str) -> String {
+    let Ok(mut url) = Url::parse(api_base) else {
+        return api_base.to_string();
+    };
+    if matches!(url.host_str(), Some("drive.quark.cn" | "drive-pc.quark.cn")) {
+        let _ = url.set_host(Some("drive-m.quark.cn"));
+    }
+    url.to_string().trim_end_matches('/').to_string()
+}
+
+fn build_secret_url(api_base: &str, path: &str) -> Result<Url> {
+    let mut url = Url::parse(&format!(
+        "{}/{}",
+        api_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    ))?;
+    url.query_pairs_mut()
+        .append_pair("pr", "ucpro")
+        .append_pair("fr", "pc");
+    Ok(url)
+}
+
+fn secret_part_url(config: &ClientConfig, pre: &UploadPre, part_number: u32) -> Result<Url> {
+    let mut url = secret_upload_base(config, pre)?;
+    url.query_pairs_mut()
+        .append_pair("partNumber", &part_number.to_string())
+        .append_pair("uploadId", &pre.data.upload_id);
+    Ok(url)
+}
+
+fn secret_complete_url(config: &ClientConfig, pre: &UploadPre) -> Result<Url> {
+    let mut url = secret_upload_base(config, pre)?;
+    url.query_pairs_mut()
+        .append_pair("uploadId", &pre.data.upload_id);
+    Ok(url)
+}
+
+fn secret_upload_base(config: &ClientConfig, pre: &UploadPre) -> Result<Url> {
+    let base = if let Some(base) = &config.oss_base_override {
+        format!(
+            "{}/{}/{}",
+            base.trim_end_matches('/'),
+            pre.data.bucket,
+            pre.data.obj_key.trim_start_matches('/')
+        )
+    } else {
+        let raw = pre.data.upload_url.trim();
+        let host = raw
+            .strip_prefix("https://")
+            .or_else(|| raw.strip_prefix("http://"))
+            .unwrap_or(raw)
+            .trim_end_matches('/');
+        format!(
+            "https://{}.{}/{}",
+            pre.data.bucket,
+            host,
+            pre.data.obj_key.trim_start_matches('/')
+        )
+    };
+    Ok(Url::parse(&base)?)
+}
+
+fn decode_secret_envelope(status: StatusCode, bytes: &[u8]) -> Result<Envelope> {
+    let envelope = serde_json::from_slice::<Envelope>(bytes).ok();
+    if !status.is_success() {
+        if let Some(envelope) = envelope {
+            let mut error = Error::api(envelope.status as i64, envelope.code, status_text(status));
+            if status == StatusCode::UNAUTHORIZED {
+                error = Error::AuthRequired;
+            }
+            return Err(error);
+        }
+        return Err(Error::api(status.as_u16() as i64, 0, status_text(status)));
+    }
+    let envelope = envelope
+        .ok_or_else(|| Error::Other("secret API returned a non-JSON response".to_string()))?;
+    if envelope.status >= 400 || envelope.code != 0 {
+        return Err(Error::api(
+            envelope.status as i64,
+            envelope.code as i64,
+            "secret API request failed",
+        ));
+    }
+    Ok(envelope)
+}
+
+fn status_text(status: StatusCode) -> &'static str {
+    if status.is_redirection() {
+        "secret API refused an unexpected redirect"
+    } else {
+        "secret API request failed"
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(default)]
@@ -804,5 +1366,45 @@ fn epoch_to_millis(value: i64) -> i64 {
         value.saturating_mul(1000)
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod privacy_transport_tests {
+    use super::*;
+
+    #[test]
+    fn official_private_hosts_use_the_secret_api_host() {
+        assert_eq!(
+            secret_api_base("https://drive.quark.cn/1/clouddrive"),
+            "https://drive-m.quark.cn/1/clouddrive"
+        );
+        assert_eq!(
+            secret_api_base("https://drive-pc.quark.cn/1/clouddrive"),
+            "https://drive-m.quark.cn/1/clouddrive"
+        );
+        assert_eq!(
+            secret_api_base("http://127.0.0.1:1234/1/clouddrive"),
+            "http://127.0.0.1:1234/1/clouddrive"
+        );
+    }
+
+    #[test]
+    fn secret_client_debug_never_contains_the_token() {
+        let client = SecretClient {
+            http: reqwest::Client::new(),
+            transfer_http: reqwest::Client::new(),
+            session: Arc::new(Mutex::new(
+                Session::from_cookie_header("__pus=test").unwrap(),
+            )),
+            config: Arc::new(ClientConfig::default()),
+            state: Arc::new(SecretState {
+                token: concat!("unit", "-test", "-debug", "-token").to_string(),
+                live: AtomicBool::new(true),
+            }),
+        };
+        let debug = format!("{client:?}");
+        assert!(debug.contains("unlocked: true"));
+        assert!(!debug.contains(concat!("unit", "-test", "-debug", "-token")));
     }
 }

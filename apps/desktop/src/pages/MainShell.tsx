@@ -6,9 +6,11 @@ import FilesPage from "./FilesPage";
 import RecycleBinPage from "./RecycleBinPage";
 import TransfersPage from "./TransfersPage";
 import SettingsPage from "./SettingsPage";
+import PrivacyPage from "./PrivacyPage";
 
 const titles = {
   files: "我的网盘",
+  privacy: "隐私空间",
   recycle: "回收站",
   transfers: "传输中心",
   settings: "设置",
@@ -73,6 +75,7 @@ export default function MainShell() {
         </header>
         <div className="min-h-0 flex-1">
           {page === "files" ? <FilesPage /> : null}
+          {page === "privacy" ? <PrivacyPage /> : null}
           {page === "recycle" ? <RecycleBinPage /> : null}
           {page === "transfers" ? <TransfersPage /> : null}
           {page === "settings" ? <SettingsPage /> : null}

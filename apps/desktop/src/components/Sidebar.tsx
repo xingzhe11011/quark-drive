@@ -5,6 +5,7 @@ import {
   Cloud,
   HardDrive,
   Settings as SettingsIcon,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -14,6 +15,7 @@ import { Progress } from "./ui/progress";
 
 const nav: Array<{ page: Page; label: string; icon: typeof HardDrive }> = [
   { page: "files", label: "我的网盘", icon: HardDrive },
+  { page: "privacy", label: "隐私空间", icon: ShieldCheck },
   { page: "recycle", label: "回收站", icon: Trash2 },
   { page: "transfers", label: "传输中心", icon: ArrowUpDown },
   { page: "settings", label: "设置", icon: SettingsIcon },

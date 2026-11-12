@@ -1,4 +1,6 @@
 mod fs;
+mod privacy;
+mod privacy_transfer;
 mod secrets;
 mod transfer;
 
@@ -257,6 +259,8 @@ struct Inner {
     config: CoreConfig,
     events: broadcast::Sender<CoreEvent>,
     clients: RwLock<HashMap<String, QuarkClient>>,
+    privacy: Mutex<privacy::PrivacySessions>,
+    privacy_transfers: Mutex<privacy_transfer::PrivacyTransfers>,
     qr_logins: RwLock<HashMap<String, QrLoginSession>>,
     active: Mutex<HashSet<String>>,
     rerun: Mutex<HashSet<String>>,
@@ -302,6 +306,8 @@ impl AppCore {
                 config,
                 events,
                 clients: RwLock::new(HashMap::new()),
+                privacy: Mutex::new(privacy::PrivacySessions::default()),
+                privacy_transfers: Mutex::new(privacy_transfer::PrivacyTransfers::default()),
                 qr_logins: RwLock::new(HashMap::new()),
                 active: Mutex::new(HashSet::new()),
                 rerun: Mutex::new(HashSet::new()),
@@ -394,6 +400,12 @@ impl AppCore {
         };
         self.inner.store.upsert_account(&row).await?;
         self.inner.clients.write().await.insert(id.clone(), client);
+        self.cancel_privacy_transfers(&id);
+        self.inner
+            .privacy
+            .lock()
+            .expect("privacy mutex poisoned")
+            .login(&id);
         let view = account_view(&row);
         self.emit(CoreEvent::AccountsChanged {
             accounts: self.accounts().await?,
@@ -483,6 +495,12 @@ impl AppCore {
     }
 
     pub async fn logout(&self, account_id: &str) -> Result<()> {
+        self.cancel_privacy_transfers(account_id);
+        self.inner
+            .privacy
+            .lock()
+            .expect("privacy mutex poisoned")
+            .logout(account_id);
         if let Some(row) = self.inner.store.get_account(account_id).await? {
             let _ = self.inner.secrets.delete(&row.cookie_ref).await;
         }
@@ -865,7 +883,7 @@ impl AppCore {
     pub async fn list_transfers(&self, limit: i64) -> Result<Vec<TransferView>> {
         let rows = self.inner.store.list_transfers(limit).await?;
         let speeds = self.inner.speeds.lock().expect("speeds mutex poisoned");
-        Ok(rows
+        let mut views = rows
             .iter()
             .map(|row| {
                 transfer_view(
@@ -876,10 +894,23 @@ impl AppCore {
                         .unwrap_or(0.0),
                 )
             })
-            .collect())
+            .collect::<Vec<_>>();
+        drop(speeds);
+        views.extend(self.privacy_transfer_views());
+        views.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        views.truncate(limit.max(0) as usize);
+        Ok(views)
     }
 
     pub async fn pause_transfer(&self, id: &str) -> Result<()> {
+        if privacy_transfer::is_privacy_transfer(id) {
+            return self.pause_privacy_transfer(id);
+        }
         self.inner
             .store
             .patch_transfer_state(
@@ -905,6 +936,9 @@ impl AppCore {
     }
 
     pub async fn resume_transfer(&self, id: &str) -> Result<()> {
+        if privacy_transfer::is_privacy_transfer(id) {
+            return self.resume_privacy_transfer(id);
+        }
         let row = self
             .inner
             .store
@@ -928,6 +962,9 @@ impl AppCore {
     }
 
     pub async fn cancel_transfer(&self, id: &str) -> Result<()> {
+        if privacy_transfer::is_privacy_transfer(id) {
+            return self.cancel_privacy_transfer(id);
+        }
         self.inner
             .store
             .patch_transfer_state(
@@ -953,6 +990,9 @@ impl AppCore {
     }
 
     pub async fn remove_transfer(&self, id: &str) -> Result<()> {
+        if privacy_transfer::is_privacy_transfer(id) {
+            return self.remove_privacy_transfer(id);
+        }
         self.cancel_transfer(id).await?;
         self.inner.store.delete_transfer(id).await?;
         Ok(())
@@ -960,6 +1000,7 @@ impl AppCore {
 
     pub async fn clear_finished_transfers(&self) -> Result<()> {
         self.inner.store.clear_finished_transfers().await?;
+        self.clear_finished_privacy_transfers();
         Ok(())
     }
 

@@ -56,6 +56,36 @@ export const backend = {
     invoke<Account>("refresh_account", { accountId }),
   listDir: (accountId: string, parentFid: string, page = 1, size = 200) =>
     invoke<ListResult>("list_dir", { accountId, parentFid, page, size }),
+  privacyRegistered: (accountId: string) =>
+    invoke<boolean>("privacy_registered", { accountId }),
+  privacyUnlock: (accountId: string, password: string) =>
+    invoke<void>("privacy_unlock", { accountId, password }),
+  privacyListDir: (accountId: string, parentFid: string, page: number, size: number) =>
+    invoke<ListResult>("privacy_list_dir", { accountId, parentFid, page, size }),
+  privacyLock: (accountId: string) =>
+    invoke<void>("privacy_lock", { accountId }),
+  privacyMoveFiles: (accountId: string, fids: string[], parentFid: string) =>
+    invoke<void>("privacy_move_files", { accountId, fids, parentFid }),
+  privacyEnqueueUpload: (
+    accountId: string,
+    paths: string[],
+    parentFid: string,
+  ) =>
+    invoke<string[]>("privacy_enqueue_upload", {
+      accountId,
+      paths,
+      parentFid,
+    }),
+  privacyEnqueueDownload: (
+    accountId: string,
+    items: DownloadItem[],
+    destDir?: string,
+  ) =>
+    invoke<string[]>("privacy_enqueue_download", {
+      accountId,
+      items,
+      destDir: destDir ?? null,
+    }),
   cachedFiles: (accountId: string, parentFid: string) =>
     invoke<FileItem[]>("cached_files", { accountId, parentFid }),
   mkdir: (accountId: string, parentFid: string, name: string) =>
@@ -335,6 +365,15 @@ async function mockInvoke(
     case "logout":
       demoState.loggedIn = false;
       return undefined;
+    case "privacy_lock":
+      return undefined;
+    case "privacy_registered":
+    case "privacy_unlock":
+    case "privacy_list_dir":
+    case "privacy_move_files":
+    case "privacy_enqueue_upload":
+    case "privacy_enqueue_download":
+      throw new Error("隐私空间仅可在桌面客户端连接真实账号使用，浏览器演示不模拟解锁成功");
     case "list_dir": {
       const parent = String(args?.parentFid || "0");
       const entries =
@@ -361,6 +400,14 @@ async function mockInvoke(
       const name = String(args?.name);
       demoState.files = demoState.files.map((item) =>
         item.fid === fid ? { ...item, name } : item,
+      );
+      return undefined;
+    }
+    case "move_files": {
+      const fids = new Set((args?.fids as string[]) || []);
+      const parentFid = String(args?.parentFid || "0");
+      demoState.files = demoState.files.map((item) =>
+        fids.has(item.fid) ? { ...item, parentFid } : item,
       );
       return undefined;
     }

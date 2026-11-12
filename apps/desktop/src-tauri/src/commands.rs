@@ -3,7 +3,7 @@ use quark_core::{
     RecycleListResult, Settings, TransferView,
 };
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::AppState;
 
@@ -74,6 +74,97 @@ pub async fn list_dir(
         .list_dir(&account_id, &parent_fid, page, size)
         .await
         .map_err(err)
+}
+
+#[tauri::command]
+pub async fn privacy_registered(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> CommandResult<bool> {
+    state
+        .core
+        .privacy_registered(&account_id)
+        .await
+        .map_err(|_| "无法确认隐私空间状态，请稍后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_unlock(
+    state: State<'_, AppState>,
+    account_id: String,
+    password: String,
+) -> CommandResult<()> {
+    state
+        .core
+        .privacy_unlock(&account_id, &password)
+        .await
+        .map_err(|_| "无法解锁隐私空间，请检查密码或稍后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_list_dir(
+    state: State<'_, AppState>,
+    account_id: String,
+    parent_fid: String,
+    page: u32,
+    size: u32,
+) -> CommandResult<ListResult> {
+    state
+        .core
+        .privacy_list_dir(&account_id, &parent_fid, page, size)
+        .await
+        .map_err(|_| "无法读取隐私目录，请重新解锁后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_lock(state: State<'_, AppState>, account_id: String) -> CommandResult<()> {
+    state
+        .core
+        .privacy_lock(&account_id)
+        .await
+        .map_err(|_| "无法确认隐私空间已锁定，请退出软件后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_move_files(
+    state: State<'_, AppState>,
+    account_id: String,
+    fids: Vec<String>,
+    parent_fid: String,
+) -> CommandResult<()> {
+    state
+        .core
+        .privacy_move_files(&account_id, &fids, &parent_fid)
+        .await
+        .map_err(|_| "无法移动隐私文件，请重新解锁后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_enqueue_upload(
+    state: State<'_, AppState>,
+    account_id: String,
+    paths: Vec<String>,
+    parent_fid: String,
+) -> CommandResult<Vec<String>> {
+    state
+        .core
+        .privacy_enqueue_upload(&account_id, paths, &parent_fid)
+        .await
+        .map_err(|_| "无法加入隐私上传任务，请检查文件并重新解锁后重试".to_owned())
+}
+
+#[tauri::command]
+pub async fn privacy_enqueue_download(
+    state: State<'_, AppState>,
+    account_id: String,
+    items: Vec<DownloadItem>,
+    dest_dir: Option<String>,
+) -> CommandResult<Vec<String>> {
+    state
+        .core
+        .privacy_enqueue_download(&account_id, items, dest_dir)
+        .await
+        .map_err(|_| "无法加入隐私下载任务，请重新解锁后重试".to_owned())
 }
 
 #[tauri::command]
@@ -281,32 +372,25 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
-pub async fn pick_files(app: AppHandle) -> CommandResult<Vec<String>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let result = rfd::FileDialog::new()
-            .pick_files()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        let _ = tx.send(result);
-    })
-    .map_err(err)?;
-    rx.await.map_err(err)
+pub async fn pick_files() -> CommandResult<Vec<String>> {
+    let files = rfd::AsyncFileDialog::new()
+        .set_title("选择要上传的文件")
+        .pick_files()
+        .await
+        .unwrap_or_default();
+    Ok(files
+        .into_iter()
+        .map(|file| file.path().to_string_lossy().to_string())
+        .collect())
 }
 
 #[tauri::command]
-pub async fn pick_folder(app: AppHandle) -> CommandResult<Option<String>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let result = rfd::FileDialog::new()
-            .pick_folder()
-            .map(|path| path.to_string_lossy().to_string());
-        let _ = tx.send(result);
-    })
-    .map_err(err)?;
-    rx.await.map_err(err)
+pub async fn pick_folder() -> CommandResult<Option<String>> {
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title("选择要上传的文件夹")
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]
